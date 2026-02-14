@@ -389,18 +389,11 @@ def send_telegram_message(text):
 
 
 def send_daily_summary():
-    """Sendet eine tägliche Zusammenfassung."""
+    """Loggt tägliche Zusammenfassung (nicht im Kanal)."""
     posted = load_posted_products()
     today = datetime.now().date().isoformat()
     today_count = sum(1 for p in posted if p["posted_at"].startswith(today))
-    
-    message = (
-        f"📊 **Tages-Update**\n\n"
-        f"Heute gepostet: {today_count} Deals\n"
-        f"Gesamt gepostet: {len(posted)} Deals\n\n"
-        f"💡 _Neue Deals kommen morgen automatisch!_"
-    )
-    send_telegram_message(message)
+    logger.info(f"📊 Heute gepostet: {today_count} Deals | Gesamt: {len(posted)}")
 
 
 # ============================================
@@ -465,14 +458,8 @@ def run_bot():
     logger.info(f"⏰ Interval: alle {POST_INTERVAL_HOURS:.1f} Stunden")
     logger.info("=" * 50)
     
-    # Startmeldung senden
-    send_telegram_message(
-        "🤖 **Affiliate Deal Bot ist online!**\n\n"
-        f"Ich poste ab jetzt {POSTS_PER_DAY}x täglich die besten Amazon Deals.\n\n"
-        "Befehle:\n"
-        "/status - Bot-Status\n"
-        "/post - Deal sofort posten"
-    )
+    # Startmeldung nur in Log, nicht im Kanal
+    logger.info("🤖 Bot ist online und postet Deals!")
     
     post_count_today = 0
     last_post_time = None
@@ -531,7 +518,6 @@ def run_bot():
             
         except KeyboardInterrupt:
             logger.info("🛑 Bot gestoppt!")
-            send_telegram_message("🛑 Bot wurde gestoppt. Bis bald!")
             break
         except Exception as e:
             logger.error(f"❌ Unerwarteter Fehler: {e}")
