@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "DEIN_BOT_TOKEN_HIER")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_KANAL_ID", "@dein_kanal_name")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@dein_kanal_name")
 AMAZON_AFFILIATE_TAG = os.getenv("AMAZON_AFFILIATE_TAG", "dein-tag-21")
 
 # Posting-Einstellungen
