@@ -1,0 +1,314 @@
+"""
+🐦 Twitter/X Deal Bot
+======================
+Postet automatisch Amazon Deals auf Twitter/X mit Hashtags.
+Läuft zusammen mit dem Telegram Bot.
+
+Setup:
+1. API Keys in .env eintragen
+2. python twitter_bot.py
+"""
+
+import os
+import time
+import random
+import logging
+import json
+import hashlib
+from datetime import datetime
+from urllib.parse import quote_plus
+import requests
+from requests_oauthlib import OAuth1
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ============================================
+# KONFIGURATION
+# ============================================
+
+# Twitter API Keys
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY", "")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET", "")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN", "")
+TWITTER_ACCESS_SECRET = os.getenv("TWITTER_ACCESS_SECRET", "")
+
+# Amazon
+AMAZON_AFFILIATE_TAG = os.getenv("AMAZON_AFFILIATE_TAG", "liasdeals21-21")
+
+# Telegram Kanal (für Werbung in Tweets)
+TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL", "@elias_deals")
+
+# Posting Settings
+TWEETS_PER_DAY = int(os.getenv("TWEETS_PER_DAY", "8"))
+TWEET_INTERVAL_HOURS = 24 / TWEETS_PER_DAY
+
+# Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('twitter_bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ============================================
+# TWITTER API
+# ============================================
+
+def get_oauth():
+    """OAuth1 Authentifizierung für Twitter API v2."""
+    return OAuth1(
+        TWITTER_API_KEY,
+        TWITTER_API_SECRET,
+        TWITTER_ACCESS_TOKEN,
+        TWITTER_ACCESS_SECRET
+    )
+
+
+def post_tweet(text):
+    """Postet einen Tweet via Twitter API v2."""
+    url = "https://api.twitter.com/2/tweets"
+    payload = {"text": text}
+    
+    try:
+        response = requests.post(url, json=payload, auth=get_oauth(), timeout=10)
+        
+        if response.status_code == 201:
+            logger.info(f"✅ Tweet gepostet!")
+            return True
+        else:
+            logger.error(f"❌ Twitter Error {response.status_code}: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Tweet Error: {e}")
+        return False
+
+
+# ============================================
+# DEAL FINDER (gleich wie Telegram Bot)
+# ============================================
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+]
+
+KEYWORDS = [
+    "Kopfhörer", "Ladekabel", "Bluetooth Lautsprecher", "Powerbank",
+    "Smartwatch", "USB Hub", "Webcam", "Mikrofon",
+    "Staubsauger", "Wasserkocher", "Luftreiniger", "Küchenmaschine",
+    "Pfanne", "Messer Set", "Bettwäsche", "Handtücher",
+]
+
+POSTED_FILE = "twitter_posted.json"
+
+
+def load_posted():
+    try:
+        with open(POSTED_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save_posted(product_id):
+    posted = load_posted()
+    posted.append({"id": product_id, "posted_at": datetime.now().isoformat()})
+    posted = posted[-500:]
+    with open(POSTED_FILE, "w") as f:
+        json.dump(posted, f)
+
+
+def is_posted(product_id):
+    return product_id in [p["id"] for p in load_posted()]
+
+
+def search_amazon(keyword):
+    """Sucht Deals auf Amazon.de."""
+    try:
+        url = f"https://www.amazon.de/s?k={quote_plus(keyword)}"
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept-Language": "de-DE,de;q=0.9",
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return []
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        items = soup.select('div[data-component-type="s-search-result"]')
+        
+        products = []
+        for item in items[:3]:
+            try:
+                # Titel
+                title_el = item.select_one("h2 a span")
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)[:80]
+                
+                # Link/ASIN
+                link_el = item.select_one("h2 a")
+                if not link_el or not link_el.get("href"):
+                    continue
+                href = link_el["href"]
+                if "/dp/" not in href:
+                    continue
+                
+                asin = href.split("/dp/")[1].split("/")[0].split("?")[0]
+                if is_posted(asin):
+                    continue
+                
+                deal_url = f"https://www.amazon.de/dp/{asin}?tag={AMAZON_AFFILIATE_TAG}"
+                
+                # Preis
+                price_el = item.select_one("span.a-price span.a-offscreen")
+                price = price_el.get_text(strip=True) if price_el else ""
+                
+                # Rating
+                rating_el = item.select_one("span.a-icon-alt")
+                rating = ""
+                if rating_el:
+                    try:
+                        r = float(rating_el.get_text(strip=True).split(" ")[0].replace(",", "."))
+                        if r < 4.0:
+                            continue
+                        rating = f"⭐ {r}/5"
+                    except:
+                        pass
+                
+                products.append({
+                    "id": asin,
+                    "title": title,
+                    "url": deal_url,
+                    "price": price,
+                    "rating": rating,
+                })
+            except:
+                continue
+        
+        return products
+    except Exception as e:
+        logger.error(f"Search error for '{keyword}': {e}")
+        return []
+
+
+# ============================================
+# TWEET FORMATTER
+# ============================================
+
+HASHTAG_SETS = [
+    "#AmazonDeals #Schnäppchen #Angebot",
+    "#AmazonDE #Deal #Sparen",
+    "#Schnäppchen #BestDeal #Amazon",
+    "#Angebot #TopDeal #AmazonDeals",
+    "#Sparen #Deals #AmazonAngebot",
+    "#Schnapper #AmazonDE #Shopping",
+]
+
+EMOJIS = ["🔥", "⚡", "💰", "🎯", "✅", "🏷️", "💥", "🚀", "👀", "💎"]
+
+
+def format_tweet(product):
+    """Formatiert einen Deal als Tweet (max 280 Zeichen)."""
+    emoji = random.choice(EMOJIS)
+    hashtags = random.choice(HASHTAG_SETS)
+    
+    # Tweet-Varianten
+    templates = [
+        f"{emoji} {product['title']}\n\n{product['price']}\n\n{product['url']}\n\n{hashtags}",
+        f"{emoji} TOP DEAL: {product['title']}\n\n{product['price']} {product['rating']}\n\n{product['url']}\n\n{hashtags}",
+        f"{product['title']}\n\n{emoji} Jetzt nur {product['price']}\n\n{product['url']}\n\n{hashtags}",
+        f"Deal des Tages {emoji}\n\n{product['title']}\n{product['price']}\n\n{product['url']}\n\n{hashtags}",
+    ]
+    
+    tweet = random.choice(templates)
+    
+    # Telegram-Werbung ab und zu (jeder 4. Tweet)
+    if random.random() < 0.25:
+        tweet += f"\n\nMehr Deals: t.me/{TELEGRAM_CHANNEL.replace('@', '')}"
+    
+    # Auf 280 Zeichen kürzen
+    if len(tweet) > 280:
+        tweet = tweet[:277] + "..."
+    
+    return tweet
+
+
+# ============================================
+# HAUPTPROGRAMM
+# ============================================
+
+def find_deal():
+    """Findet einen zufälligen Deal."""
+    keyword = random.choice(KEYWORDS)
+    logger.info(f"🔍 Suche: {keyword}")
+    products = search_amazon(keyword)
+    time.sleep(random.uniform(2, 5))
+    
+    if products:
+        return random.choice(products)
+    return None
+
+
+def run_twitter_bot():
+    """Hauptschleife."""
+    logger.info("=" * 50)
+    logger.info("🐦 Twitter Deal Bot gestartet!")
+    logger.info(f"📮 Tweets pro Tag: {TWEETS_PER_DAY}")
+    logger.info(f"⏰ Interval: alle {TWEET_INTERVAL_HOURS:.1f} Stunden")
+    logger.info("=" * 50)
+    
+    tweet_count_today = 0
+    last_tweet_time = None
+    
+    while True:
+        try:
+            now = datetime.now()
+            
+            # Tages-Reset
+            if last_tweet_time and now.date() > last_tweet_time.date():
+                tweet_count_today = 0
+            
+            # Tweeten wenn Zeit
+            should_tweet = False
+            if last_tweet_time is None:
+                should_tweet = True
+            elif (now - last_tweet_time).total_seconds() >= TWEET_INTERVAL_HOURS * 3600:
+                should_tweet = True
+            
+            if should_tweet and tweet_count_today < TWEETS_PER_DAY:
+                if 8 <= now.hour <= 23:
+                    deal = find_deal()
+                    
+                    if deal:
+                        tweet = format_tweet(deal)
+                        if post_tweet(tweet):
+                            save_posted(deal["id"])
+                            tweet_count_today += 1
+                            last_tweet_time = now
+                            logger.info(f"✅ Tweet #{tweet_count_today}: {deal['title'][:40]}...")
+                    else:
+                        logger.warning("⚠️ Kein Deal gefunden")
+                        last_tweet_time = now
+            
+            time.sleep(60)  # Jede Minute checken
+            
+        except KeyboardInterrupt:
+            logger.info("🛑 Twitter Bot gestoppt!")
+            break
+        except Exception as e:
+            logger.error(f"❌ Error: {e}")
+            time.sleep(120)
+
+
+if __name__ == "__main__":
+    if not TWITTER_API_KEY:
+        print("\n⚠️  Twitter API Keys fehlen in .env!")
+    else:
+        run_twitter_bot()
